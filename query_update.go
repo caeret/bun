@@ -99,6 +99,13 @@ func (q *UpdateQuery) Column(columns ...string) *UpdateQuery {
 	return q
 }
 
+func (q *UpdateQuery) ExtColumn(columns ...string) *UpdateQuery {
+	for _, column := range columns {
+		q.addExtColumn(schema.UnsafeIdent(column))
+	}
+	return q
+}
+
 func (q *UpdateQuery) ExcludeColumn(columns ...string) *UpdateQuery {
 	q.excludeColumn(columns)
 	return q

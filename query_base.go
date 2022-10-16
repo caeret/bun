@@ -103,6 +103,7 @@ type baseQuery struct {
 	modelTableName schema.QueryWithArgs
 	tables         []schema.QueryWithArgs
 	columns        []schema.QueryWithArgs
+	extColumns     []schema.QueryWithArgs
 
 	flags internal.Flag
 }
@@ -344,6 +345,10 @@ func (q *baseQuery) addColumn(column schema.QueryWithArgs) {
 	q.columns = append(q.columns, column)
 }
 
+func (q *baseQuery) addExtColumn(column schema.QueryWithArgs) {
+	q.extColumns = append(q.extColumns, column)
+}
+
 func (q *baseQuery) excludeColumn(columns []string) {
 	if q.table == nil {
 		q.setErr(errNilModel)
@@ -530,8 +535,24 @@ func (q *baseQuery) getDataFields() ([]*schema.Field, error) {
 }
 
 func (q *baseQuery) _getFields(omitPK bool) ([]*schema.Field, error) {
-	fields := make([]*schema.Field, 0, len(q.columns))
+	fields := make([]*schema.Field, 0, len(q.columns)+len(q.extColumns))
 	for _, col := range q.columns {
+		if col.Args != nil {
+			continue
+		}
+
+		field, err := q.table.Field(col.Query)
+		if err != nil {
+			return nil, err
+		}
+
+		if omitPK && field.IsPK {
+			continue
+		}
+
+		fields = append(fields, field)
+	}
+	for _, col := range q.extColumns {
 		if col.Args != nil {
 			continue
 		}
