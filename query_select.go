@@ -904,6 +904,17 @@ func (q *SelectQuery) Scan(ctx context.Context, dest ...interface{}) error {
 	return nil
 }
 
+func (q *SelectQuery) ScanOne(ctx context.Context, dest ...interface{}) (bool, error) {
+	err := q.Scan(ctx, dest...)
+	if err == nil {
+		return true, nil
+	}
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return false, err
+}
+
 func (q *SelectQuery) beforeSelectHook(ctx context.Context) error {
 	if hook, ok := q.table.ZeroIface.(BeforeSelectHook); ok {
 		if err := hook.BeforeSelect(ctx, q); err != nil {
