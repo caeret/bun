@@ -24,6 +24,9 @@ import (
 	"github.com/uptrace/bun/driver/pgdriver"
 	"github.com/uptrace/bun/driver/sqliteshim"
 	"github.com/uptrace/bun/extra/bundebug"
+	"github.com/uptrace/bun/migrate/sqlschema"
+	"github.com/uptrace/bun/extra/bunexp"
+	"github.com/uptrace/bun/schema"
 
 	_ "github.com/denisenkom/go-mssqldb"
 	_ "github.com/go-sql-driver/mysql"
@@ -53,6 +56,13 @@ var allDBs = map[string]func(tb testing.TB) *bun.DB{
 	mssql2019Name: mssql2019,
 }
 
+var allDialects = []func() schema.Dialect{
+	func() schema.Dialect { return pgdialect.New() },
+	func() schema.Dialect { return mysqldialect.New() },
+	func() schema.Dialect { return sqlitedialect.New() },
+	func() schema.Dialect { return mssqldialect.New() },
+}
+
 func pg(tb testing.TB) *bun.DB {
 	dsn := os.Getenv("PG")
 	if dsn == "" {
@@ -67,7 +77,7 @@ func pg(tb testing.TB) *bun.DB {
 	db := bun.NewDB(sqldb, pgdialect.New())
 	db.AddQueryHook(bundebug.NewQueryHook(
 		bundebug.WithEnabled(false),
-		bundebug.FromEnv(""),
+		bundebug.FromEnv(),
 	))
 
 	require.Equal(tb, "DB<dialect=pg>", db.String())
@@ -90,7 +100,7 @@ func pgx(tb testing.TB) *bun.DB {
 	db := bun.NewDB(sqldb, pgdialect.New())
 	db.AddQueryHook(bundebug.NewQueryHook(
 		bundebug.WithEnabled(false),
-		bundebug.FromEnv(""),
+		bundebug.FromEnv(),
 	))
 
 	require.Equal(tb, "DB<dialect=pg>", db.String())
@@ -113,7 +123,7 @@ func mysql8(tb testing.TB) *bun.DB {
 	db := bun.NewDB(sqldb, mysqldialect.New())
 	db.AddQueryHook(bundebug.NewQueryHook(
 		bundebug.WithEnabled(false),
-		bundebug.FromEnv(""),
+		bundebug.FromEnv(),
 	))
 
 	require.Equal(tb, "DB<dialect=mysql>", db.String())
@@ -136,7 +146,7 @@ func mysql5(tb testing.TB) *bun.DB {
 	db := bun.NewDB(sqldb, mysqldialect.New())
 	db.AddQueryHook(bundebug.NewQueryHook(
 		bundebug.WithEnabled(false),
-		bundebug.FromEnv(""),
+		bundebug.FromEnv(),
 	))
 
 	require.Equal(tb, "DB<dialect=mysql>", db.String())
@@ -159,7 +169,7 @@ func mariadb(tb testing.TB) *bun.DB {
 	db := bun.NewDB(sqldb, mysqldialect.New())
 	db.AddQueryHook(bundebug.NewQueryHook(
 		bundebug.WithEnabled(false),
-		bundebug.FromEnv(""),
+		bundebug.FromEnv(),
 	))
 
 	require.Equal(tb, "DB<dialect=mysql>", db.String())
@@ -177,7 +187,7 @@ func sqlite(tb testing.TB) *bun.DB {
 	db := bun.NewDB(sqldb, sqlitedialect.New())
 	db.AddQueryHook(bundebug.NewQueryHook(
 		bundebug.WithEnabled(false),
-		bundebug.FromEnv(""),
+		bundebug.FromEnv(),
 	))
 
 	require.Equal(tb, "DB<dialect=sqlite>", db.String())
@@ -200,7 +210,7 @@ func mssql2019(tb testing.TB) *bun.DB {
 	db := bun.NewDB(sqldb, mssqldialect.New())
 	db.AddQueryHook(bundebug.NewQueryHook(
 		bundebug.WithEnabled(false),
-		bundebug.FromEnv(""),
+		bundebug.FromEnv(),
 	))
 
 	require.Equal(tb, "DB<dialect=mssql>", db.String())
@@ -212,6 +222,17 @@ func testEachDB(t *testing.T, f func(t *testing.T, dbName string, db *bun.DB)) {
 	for dbName, newDB := range allDBs {
 		t.Run(dbName, func(t *testing.T) {
 			f(t, dbName, newDB(t))
+		})
+	}
+}
+
+// testEachDialect allows testing dialect-specific functionality that does not require database interactions.
+func testEachDialect(t *testing.T, f func(t *testing.T, dialectName string, dialect schema.Dialect)) {
+	for _, newDialect := range allDialects {
+		d := newDialect()
+		name := d.Name().String()
+		t.Run(name, func(t *testing.T) {
+			f(t, name, d)
 		})
 	}
 }
@@ -258,6 +279,9 @@ func TestDB(t *testing.T) {
 		{testFKViolation},
 		{testWithForeignKeysAndRules},
 		{testWithForeignKeys},
+		{testWithForeignKeysHasMany},
+		{testWithPointerForeignKeysHasMany},
+		{testWithPointerForeignKeysHasManyWithDriverValuer},
 		{testInterfaceAny},
 		{testInterfaceJSON},
 		{testScanRawMessage},
@@ -277,6 +301,7 @@ func TestDB(t *testing.T) {
 		{testRunInTxAndSavepoint},
 		{testDriverValuerReturnsItself},
 		{testNoPanicWhenReturningNullColumns},
+		{testNoForeignKeyForPrimaryKey},
 	}
 
 	testEachDB(t, func(t *testing.T, dbName string, db *bun.DB) {
@@ -876,7 +901,7 @@ func testFKViolation(t *testing.T, db *bun.DB) {
 	_, err = db.NewInsert().Model(new(Deck)).Exec(ctx)
 	require.Error(t, err)
 
-	// Create a deck that violates the user_id FK contraint
+	// Create a deck that violates the user_id FK constraint
 	deck := &Deck{UserID: 42}
 
 	_, err = db.NewInsert().Model(deck).Exec(ctx)
@@ -927,7 +952,7 @@ func testWithForeignKeysAndRules(t *testing.T, db *bun.DB) {
 	_, err = db.NewInsert().Model(new(Deck)).Exec(ctx)
 	require.Error(t, err)
 
-	// Create a deck that violates the user_id FK contraint
+	// Create a deck that violates the user_id FK constraint
 	deck := &Deck{UserID: 42}
 
 	_, err = db.NewInsert().Model(deck).Exec(ctx)
@@ -1012,7 +1037,7 @@ func testWithForeignKeys(t *testing.T, db *bun.DB) {
 	_, err = db.NewInsert().Model(new(Deck)).Exec(ctx)
 	require.Error(t, err)
 
-	// Create a deck that violates the user_id FK contraint
+	// Create a deck that violates the user_id FK constraint
 	deck := &Deck{UserID: 42}
 
 	_, err = db.NewInsert().Model(deck).Exec(ctx)
@@ -1041,6 +1066,168 @@ func testWithForeignKeys(t *testing.T, db *bun.DB) {
 	require.NoError(t, err)
 	require.NotNil(t, d.User)
 	require.Equal(t, d.User.Name, "root")
+}
+
+func testWithForeignKeysHasMany(t *testing.T, db *bun.DB) {
+	type User struct {
+		ID     int `bun:",pk"`
+		DeckID int
+		Name   string
+	}
+	type Deck struct {
+		ID    int     `bun:",pk"`
+		Users []*User `bun:"rel:has-many,join:id=deck_id"`
+	}
+
+	if db.Dialect().Name() == dialect.SQLite {
+		_, err := db.Exec("PRAGMA foreign_keys = ON;")
+		require.NoError(t, err)
+	}
+
+	for _, model := range []interface{}{(*Deck)(nil), (*User)(nil)} {
+		_, err := db.NewDropTable().Model(model).IfExists().Exec(ctx)
+		require.NoError(t, err)
+	}
+
+	mustResetModel(t, ctx, db, (*User)(nil))
+	_, err := db.NewCreateTable().
+		Model((*Deck)(nil)).
+		IfNotExists().
+		WithForeignKeys().
+		Exec(ctx)
+	require.NoError(t, err)
+	mustDropTableOnCleanup(t, ctx, db, (*Deck)(nil))
+
+	deckID := 1
+	deck := Deck{ID: deckID}
+	_, err = db.NewInsert().Model(&deck).Exec(ctx)
+	require.NoError(t, err)
+
+	userID1 := 1
+	userID2 := 2
+	users := []*User{
+		{ID: userID1, DeckID: deckID, Name: "user 1"},
+		{ID: userID2, DeckID: deckID, Name: "user 2"},
+	}
+
+	res, err := db.NewInsert().Model(&users).Exec(ctx)
+	require.NoError(t, err)
+
+	affected, err := res.RowsAffected()
+	require.NoError(t, err)
+	require.Equal(t, int64(2), affected)
+
+	err = db.NewSelect().Model(&deck).Relation("Users").Scan(ctx)
+	require.NoError(t, err)
+	require.Len(t, deck.Users, 2)
+}
+
+func testWithPointerForeignKeysHasMany(t *testing.T, db *bun.DB) {
+	type User struct {
+		ID     *int `bun:",pk"`
+		DeckID *int
+		Name   string
+	}
+	type Deck struct {
+		ID    *int    `bun:",pk"`
+		Users []*User `bun:"rel:has-many,join:id=deck_id"`
+	}
+
+	if db.Dialect().Name() == dialect.SQLite {
+		_, err := db.Exec("PRAGMA foreign_keys = ON;")
+		require.NoError(t, err)
+	}
+
+	for _, model := range []interface{}{(*Deck)(nil), (*User)(nil)} {
+		_, err := db.NewDropTable().Model(model).IfExists().Exec(ctx)
+		require.NoError(t, err)
+	}
+
+	mustResetModel(t, ctx, db, (*User)(nil))
+	_, err := db.NewCreateTable().
+		Model((*Deck)(nil)).
+		IfNotExists().
+		WithForeignKeys().
+		Exec(ctx)
+	require.NoError(t, err)
+	mustDropTableOnCleanup(t, ctx, db, (*Deck)(nil))
+
+	deckID := 1
+	deck := Deck{ID: &deckID}
+	_, err = db.NewInsert().Model(&deck).Exec(ctx)
+	require.NoError(t, err)
+
+	userID1 := 1
+	userID2 := 2
+	users := []*User{
+		{ID: &userID1, DeckID: &deckID, Name: "user 1"},
+		{ID: &userID2, DeckID: &deckID, Name: "user 2"},
+	}
+
+	res, err := db.NewInsert().Model(&users).Exec(ctx)
+	require.NoError(t, err)
+
+	affected, err := res.RowsAffected()
+	require.NoError(t, err)
+	require.Equal(t, int64(2), affected)
+
+	err = db.NewSelect().Model(&deck).Relation("Users").Scan(ctx)
+	require.NoError(t, err)
+	require.Len(t, deck.Users, 2)
+}
+
+func testWithPointerForeignKeysHasManyWithDriverValuer(t *testing.T, db *bun.DB) {
+	type User struct {
+		ID     *int `bun:",pk"`
+		DeckID sql.NullInt64
+		Name   string
+	}
+	type Deck struct {
+		ID    int64   `bun:",pk"`
+		Users []*User `bun:"rel:has-many,join:id=deck_id"`
+	}
+
+	if db.Dialect().Name() == dialect.SQLite {
+		_, err := db.Exec("PRAGMA foreign_keys = ON;")
+		require.NoError(t, err)
+	}
+
+	for _, model := range []interface{}{(*Deck)(nil), (*User)(nil)} {
+		_, err := db.NewDropTable().Model(model).IfExists().Exec(ctx)
+		require.NoError(t, err)
+	}
+
+	mustResetModel(t, ctx, db, (*User)(nil))
+	_, err := db.NewCreateTable().
+		Model((*Deck)(nil)).
+		IfNotExists().
+		WithForeignKeys().
+		Exec(ctx)
+	require.NoError(t, err)
+	mustDropTableOnCleanup(t, ctx, db, (*Deck)(nil))
+
+	deckID := int64(1)
+	deck := Deck{ID: deckID}
+	_, err = db.NewInsert().Model(&deck).Exec(ctx)
+	require.NoError(t, err)
+
+	userID1 := 1
+	userID2 := 2
+	users := []*User{
+		{ID: &userID1, DeckID: sql.NullInt64{Int64: deckID, Valid: true}, Name: "user 1"},
+		{ID: &userID2, DeckID: sql.NullInt64{Int64: deckID, Valid: true}, Name: "user 2"},
+	}
+
+	res, err := db.NewInsert().Model(&users).Exec(ctx)
+	require.NoError(t, err)
+
+	affected, err := res.RowsAffected()
+	require.NoError(t, err)
+	require.Equal(t, int64(2), affected)
+
+	err = db.NewSelect().Model(&deck).Relation("Users").Scan(ctx)
+	require.NoError(t, err)
+	require.Len(t, deck.Users, 2)
 }
 
 func testInterfaceAny(t *testing.T, db *bun.DB) {
@@ -1439,6 +1626,27 @@ func testEmbedModelPointer(t *testing.T, db *bun.DB) {
 	require.Equal(t, *m1, m2)
 }
 
+func testEmbedTypeField(t *testing.T, db *bun.DB) {
+	type Embed string
+	type Model struct {
+		Embed
+	}
+
+	ctx := context.Background()
+	mustResetModel(t, ctx, db, (*Model)(nil))
+
+	m1 := &Model{
+		Embed: Embed("foo"),
+	}
+	_, err := db.NewInsert().Model(m1).Exec(ctx)
+	require.NoError(t, err)
+
+	var m2 Model
+	err = db.NewSelect().Model(&m2).Scan(ctx)
+	require.NoError(t, err)
+	require.Equal(t, *m1, m2)
+}
+
 type JSONField struct {
 	Foo string `json:"foo"`
 }
@@ -1625,6 +1833,59 @@ func testNoPanicWhenReturningNullColumns(t *testing.T, db *bun.DB) {
 	})
 }
 
+func testNoForeignKeyForPrimaryKey(t *testing.T, db *bun.DB) {
+	inspect := inspectDbOrSkip(t, db)
+
+	for _, tt := range []struct {
+		name     string
+		model    interface{}
+		dontWant sqlschema.ForeignKey
+	}{
+		{name: "has-one relation", model: (*struct {
+			bun.BaseModel `bun:"table:users"`
+			ID            string `bun:",pk"`
+
+			Profile *struct {
+				bun.BaseModel `bun:"table:profiles"`
+				ID            string `bun:",pk"`
+				UserID        string
+			} `bun:"rel:has-one,join:id=user_id"`
+		})(nil), dontWant: sqlschema.ForeignKey{
+			From: sqlschema.NewColumnReference("users", "id"),
+			To:   sqlschema.NewColumnReference("profiles", "user_id"),
+		}},
+
+		{name: "belongs-to relation", model: (*struct {
+			bun.BaseModel `bun:"table:profiles"`
+			ID            string `bun:",pk"`
+
+			User *struct {
+				bun.BaseModel `bun:"table:users"`
+				ID            string `bun:",pk"`
+				ProfileID     string
+			} `bun:"rel:belongs-to,join:id=profile_id"`
+		})(nil), dontWant: sqlschema.ForeignKey{
+			From: sqlschema.NewColumnReference("profiles", "id"),
+			To:   sqlschema.NewColumnReference("users", "profile_id"),
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			mustDropTableOnCleanup(t, ctx, db, tt.model)
+
+			_, err := db.NewCreateTable().Model(tt.model).WithForeignKeys().Exec(ctx)
+			require.NoError(t, err, "create table")
+
+			state := inspect(ctx)
+			require.NotContainsf(t, state.ForeignKeys, tt.dontWant,
+				"%s.%s -> %s.%s is not inteded",
+				tt.dontWant.From.TableName, tt.dontWant.From.Column,
+				tt.dontWant.To.TableName, tt.dontWant.To.Column,
+			)
+		})
+	}
+}
+
 func mustResetModel(tb testing.TB, ctx context.Context, db *bun.DB, models ...interface{}) {
 	err := db.ResetModel(ctx, models...)
 	require.NoError(tb, err, "must reset model")
@@ -1634,9 +1895,43 @@ func mustResetModel(tb testing.TB, ctx context.Context, db *bun.DB, models ...in
 func mustDropTableOnCleanup(tb testing.TB, ctx context.Context, db *bun.DB, models ...interface{}) {
 	tb.Cleanup(func() {
 		for _, model := range models {
-			drop := db.NewDropTable().IfExists().Model(model)
+			drop := db.NewDropTable().IfExists().Cascade().Model(model)
 			_, err := drop.Exec(ctx)
 			require.NoError(tb, err, "must drop table: %q", drop.GetTableName())
 		}
 	})
+}
+
+func TestConnResolver(t *testing.T) {
+	dsn := os.Getenv("PG")
+	if dsn == "" {
+		dsn = "postgres://postgres:postgres@localhost:5432/test?sslmode=disable"
+	}
+
+	rwdb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn)))
+	t.Cleanup(func() {
+		require.NoError(t, rwdb.Close())
+	})
+
+	rodb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn)))
+	t.Cleanup(func() {
+		require.NoError(t, rodb.Close())
+	})
+
+	resolver := bunexp.NewReadWriteConnResolver(
+		bunexp.WithDBReplica(rodb, bunexp.DBReplicaReadOnly),
+	)
+
+	db := bun.NewDB(rwdb, pgdialect.New(), bun.WithConnResolver(resolver))
+	db.AddQueryHook(bundebug.NewQueryHook(
+		bundebug.WithEnabled(false),
+		bundebug.FromEnv(),
+	))
+
+	var num int
+	err := db.NewSelect().ColumnExpr("1").Scan(ctx, &num)
+	require.NoError(t, err)
+	require.Equal(t, 1, num)
+	require.GreaterOrEqual(t, rodb.Stats().OpenConnections, 1)
+	require.Equal(t, 0, rwdb.Stats().OpenConnections)
 }
